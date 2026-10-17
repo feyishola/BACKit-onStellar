@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuditModule } from '../../audit/audit.module';
 import {
+  QUEUE_ANALYTICS_SNAPSHOTS,
   QUEUE_DEAD_LETTER,
   QUEUE_IPFS_PINNING,
   QUEUE_NOTIFICATIONS,
@@ -66,6 +67,15 @@ import { AdminQueuesController } from './admin-queues.controller';
         attempts: 3,
         backoff: { type: 'exponential', delay: 1000 },
         removeOnComplete: { age: 60 * 60 * 24 },
+        removeOnFail: false,
+      },
+    }),
+    BullModule.registerQueue({
+      name: QUEUE_ANALYTICS_SNAPSHOTS,
+      defaultJobOptions: {
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 30_000 },
+        removeOnComplete: { count: 90 },
         removeOnFail: false,
       },
     }),

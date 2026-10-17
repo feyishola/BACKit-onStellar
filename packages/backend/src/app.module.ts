@@ -34,6 +34,7 @@ import { GraphqlModule } from './graphql/graphql.module';
 import { WebhooksModule } from './webhooks/webhook.module';
 import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { IdempotencyModule } from './idempotency/idempotency.module';
+import { SnapshotsModule } from './analytics/snapshots.module';
 import { IdempotencyInterceptor } from './idempotency/idempotency.interceptor';
 
 @Module({
@@ -84,6 +85,7 @@ import { IdempotencyInterceptor } from './idempotency/idempotency.interceptor';
     WebhooksModule,
     ReconciliationModule,
     IdempotencyModule,
+    SnapshotsModule,
   ],
   controllers: [],
   providers: [

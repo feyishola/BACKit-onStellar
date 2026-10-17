@@ -10,6 +10,7 @@ import { HealthModule } from './health/health.module';
 import { OracleModule } from './oracle/oracle.module';
 import { IndexerModule } from './indexer/indexer.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { ReputationModule } from './analytics/reputation.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SearchModule } from './search/search.module';
 import { UsersModule } from './user/users.module';
@@ -64,6 +65,7 @@ import { IdempotencyInterceptor } from './idempotency/idempotency.interceptor';
     OracleModule,
     IndexerModule,
     AnalyticsModule,
+    ReputationModule,
     NotificationsModule,
     SearchModule,
     UsersModule,

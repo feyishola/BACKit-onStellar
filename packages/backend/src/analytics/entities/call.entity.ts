@@ -56,4 +56,8 @@ export class Call {
 
   @Column({ type: 'varchar', length: 20, nullable: true })
   status?: string;
+
+  /** Expertise category (DEFI, MEMECOINS, AI, MACRO, OTHER). Inferred from the title when null. */
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  category?: string | null;
 }

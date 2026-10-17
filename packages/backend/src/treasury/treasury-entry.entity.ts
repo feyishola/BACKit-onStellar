@@ -9,6 +9,7 @@ import {
 @Entity('treasury_entries')
 @Index('IDX_treasury_token_collected', ['tokenAddress', 'collectedAt'])
 @Index('IDX_treasury_call_collected', ['callId', 'collectedAt'])
+@Index('IDX_treasury_collected', ['collectedAt'])
 export class TreasuryEntry {
   @PrimaryGeneratedColumn('uuid')
   id: string;

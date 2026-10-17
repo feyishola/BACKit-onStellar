@@ -62,6 +62,15 @@ export class Users {
   @Column({ type: 'boolean', default: false })
   banned: boolean;
 
+  // ─── denormalised social counters (BE-034) ─────────────────────────────
+  // Maintained transactionally by UsersService.follow/unfollow and repaired
+  // nightly by SocialGraphService.reconcileFollowCounts.
+  @Column({ type: 'int', default: 0 })
+  followerCount: number;
+
+  @Column({ type: 'int', default: 0 })
+  followingCount: number;
+
   @CreateDateColumn()
   createdAt: Date;
 

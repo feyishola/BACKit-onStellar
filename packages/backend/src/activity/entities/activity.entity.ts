@@ -3,6 +3,7 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 
 export enum ActivityType {
@@ -13,6 +14,7 @@ export enum ActivityType {
 }
 
 @Entity('activity')
+@Index('IDX_activity_user_created', ['userAddress', 'createdAt'])
 export class Activity {
   @PrimaryGeneratedColumn('uuid')
   id: string;

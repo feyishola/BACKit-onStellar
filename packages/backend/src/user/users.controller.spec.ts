@@ -2,6 +2,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
+import { SocialGraphService } from './social-graph.service';
 import { CreateProfileDto, UpdateProfileDto } from './dto/profile.dto';
 
 describe('UsersController', () => {
@@ -15,6 +16,14 @@ describe('UsersController', () => {
     getUserByAddress: jest.fn(),
     createProfile: jest.fn(),
     updateProfile: jest.fn(),
+    toggleFollow: jest.fn(),
+  };
+
+  const mockSocialGraphService = {
+    getSecondDegreeConnections: jest.fn(),
+    getTopCoBackers: jest.fn(),
+    getTopRivals: jest.fn(),
+    getAffinity: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -25,6 +34,7 @@ describe('UsersController', () => {
           provide: UsersService,
           useValue: mockUsersService,
         },
+        { provide: SocialGraphService, useValue: mockSocialGraphService },
       ],
     }).compile();
 
@@ -34,6 +44,33 @@ describe('UsersController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  describe('social graph (BE-034)', () => {
+    it('toggles follow using the body follower', async () => {
+      mockUsersService.toggleFollow.mockResolvedValue({ following: true });
+      await controller.toggleFollow('GB', { followerAddress: 'GA' });
+      expect(mockUsersService.toggleFollow).toHaveBeenCalledWith('GA', 'GB');
+    });
+
+    it('routes network, co-backer, rival and affinity queries', async () => {
+      await controller.getSecondDegree('GA', 10);
+      await controller.getCoBackers('GA', 5);
+      await controller.getRivals('GA', 5);
+      await controller.getAffinity('GA', 'GB');
+      expect(
+        mockSocialGraphService.getSecondDegreeConnections,
+      ).toHaveBeenCalledWith('GA', 10);
+      expect(mockSocialGraphService.getTopCoBackers).toHaveBeenCalledWith(
+        'GA',
+        5,
+      );
+      expect(mockSocialGraphService.getTopRivals).toHaveBeenCalledWith('GA', 5);
+      expect(mockSocialGraphService.getAffinity).toHaveBeenCalledWith(
+        'GA',
+        'GB',
+      );
+    });
   });
 
   describe('profile CRUD', () => {

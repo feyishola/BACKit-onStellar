@@ -26,13 +26,17 @@ import {
   ApiConsumes,
 } from '@nestjs/swagger';
 import { UsersService } from './users.service';
+import { SocialGraphService } from './social-graph.service';
 import { FollowDto } from './dto/follow.dto';
 import { CreateProfileDto, UpdateProfileDto } from './dto/profile.dto';
 
 @ApiTags('users')
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly socialGraphService: SocialGraphService,
+  ) {}
 
   // ─── existing endpoints — unchanged ──────────────────────────────────────
 
@@ -66,6 +70,67 @@ export class UsersController {
     @Body() followDto: FollowDto,
   ) {
     return this.usersService.unfollow(followDto.followerAddress, address);
+  }
+
+  @Post(':address/follow/toggle')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Toggle follow state for a user' })
+  @ApiParam({ name: 'address', description: 'Address of the user to toggle' })
+  @ApiResponse({
+    status: 200,
+    description: "New follow state and the target user's counts.",
+  })
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  async toggleFollow(
+    @Param('address') address: string,
+    @Body() followDto: FollowDto,
+  ) {
+    return this.usersService.toggleFollow(followDto.followerAddress, address);
+  }
+
+  // ─── social graph (BE-034) ────────────────────────────────────────────────
+
+  @Get(':address/social/network')
+  @ApiOperation({
+    summary: 'Second-degree connections (followed by people you follow)',
+  })
+  @ApiParam({ name: 'address', description: 'User address' })
+  async getSecondDegree(
+    @Param('address') address: string,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+  ) {
+    return this.socialGraphService.getSecondDegreeConnections(address, limit);
+  }
+
+  @Get(':address/social/co-backers')
+  @ApiOperation({ summary: 'Users who most often back the same side' })
+  @ApiParam({ name: 'address', description: 'User address' })
+  async getCoBackers(
+    @Param('address') address: string,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+  ) {
+    return this.socialGraphService.getTopCoBackers(address, limit);
+  }
+
+  @Get(':address/social/rivals')
+  @ApiOperation({ summary: 'Rival leaderboard: top counter-backers' })
+  @ApiParam({ name: 'address', description: 'User address' })
+  async getRivals(
+    @Param('address') address: string,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+  ) {
+    return this.socialGraphService.getTopRivals(address, limit);
+  }
+
+  @Get(':address/social/affinity/:other')
+  @ApiOperation({ summary: 'Mutual agreement affinity between two users' })
+  @ApiParam({ name: 'address', description: 'User address' })
+  @ApiParam({ name: 'other', description: 'Counterpart address' })
+  async getAffinity(
+    @Param('address') address: string,
+    @Param('other') other: string,
+  ) {
+    return this.socialGraphService.getAffinity(address, other);
   }
 
   @Get(':address/followers')

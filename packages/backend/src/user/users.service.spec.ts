@@ -14,6 +14,7 @@ import { Follow } from './entities/follow.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { NotificationPreferencesService } from '../notifications/notification-preferences.service';
 import { IpfsService } from '../storage/ipfs.service';
+import { SocialGraphService } from './social-graph.service';
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -24,6 +25,8 @@ describe('UsersService', () => {
     save: jest.fn(),
   };
 
+  const em = { query: jest.fn<Promise<unknown>, [string, unknown[]?]>() };
+
   const followsRepo = {
     findOne: jest.fn(),
     create: jest.fn(),
@@ -31,6 +34,15 @@ describe('UsersService', () => {
     findAndCount: jest.fn(),
     remove: jest.fn(),
     count: jest.fn(),
+    manager: {
+      transaction: jest.fn((cb: (e: typeof em) => unknown) =>
+        Promise.resolve(cb(em)),
+      ),
+    },
+  };
+
+  const socialGraphService = {
+    invalidateSecondDegree: jest.fn().mockResolvedValue(undefined),
   };
 
   const analyticsService = {
@@ -65,6 +77,7 @@ describe('UsersService', () => {
         },
         { provide: IpfsService, useValue: ipfsService },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: SocialGraphService, useValue: socialGraphService },
       ],
     }).compile();
 
@@ -77,36 +90,126 @@ describe('UsersService', () => {
     );
   });
 
-  it('throws 409 for duplicate follow', async () => {
+  it('throws 409 for duplicate follow without touching counters', async () => {
     usersRepo.findOne.mockResolvedValue({ id: 'u1', walletAddress: 'A' });
-    followsRepo.findOne.mockResolvedValue({ id: 'f1' });
+    em.query.mockResolvedValueOnce([]); // ON CONFLICT DO NOTHING → no row
 
     await expect(service.follow('A', 'B')).rejects.toBeInstanceOf(
       ConflictException,
     );
+    expect(em.query).toHaveBeenCalledTimes(1);
+    expect(eventEmitter.emit).not.toHaveBeenCalled();
   });
 
-  it('creates a new follow relation', async () => {
+  it('creates a follow and bumps both counters in the same transaction', async () => {
     usersRepo.findOne
       .mockResolvedValueOnce({ id: 'u1', walletAddress: 'A' })
       .mockResolvedValueOnce({ id: 'u2', walletAddress: 'B' });
-    followsRepo.findOne.mockResolvedValue(null);
-    followsRepo.create.mockReturnValue({
-      followerAddress: 'A',
-      followingAddress: 'B',
-    });
-    followsRepo.save.mockResolvedValue({
-      id: 'f1',
-      followerAddress: 'A',
-      followingAddress: 'B',
-    });
+    em.query
+      .mockResolvedValueOnce([
+        { id: 'f1', followerAddress: 'A', followingAddress: 'B' },
+      ])
+      .mockResolvedValueOnce([[], 2]);
 
     const result = await service.follow('A', 'B');
     expect(result.id).toBe('f1');
+    expect(followsRepo.manager.transaction).toHaveBeenCalledTimes(1);
+    const [counterSql, counterParams] = em.query.mock.calls[1];
+    expect(counterSql).toContain('"followingCount" = "followingCount" + CASE');
+    expect(counterSql).toContain('"followerCount" = "followerCount" + CASE');
+    expect(counterParams).toEqual(['A', 'B']);
+    expect(socialGraphService.invalidateSecondDegree).toHaveBeenCalledWith('A');
     expect(eventEmitter.emit).toHaveBeenCalledWith('user.followed', {
       followerAddress: 'A',
       followingAddress: 'B',
     });
+  });
+
+  it('unfollow decrements counters and never goes below zero', async () => {
+    em.query
+      .mockResolvedValueOnce([[{ id: 'f1' }], 1])
+      .mockResolvedValueOnce([[], 2]);
+
+    await expect(service.unfollow('A', 'B')).resolves.toEqual({
+      followerAddress: 'A',
+      followingAddress: 'B',
+    });
+    expect(em.query.mock.calls[1][0]).toContain('GREATEST("followerCount" -');
+  });
+
+  it('unfollow throws when not following', async () => {
+    em.query.mockResolvedValueOnce([[], 0]);
+    await expect(service.unfollow('A', 'B')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(em.query).toHaveBeenCalledTimes(1);
+  });
+
+  describe('toggleFollow', () => {
+    it('follows when not yet following and returns fresh counts', async () => {
+      followsRepo.findOne.mockResolvedValueOnce(null);
+      usersRepo.findOne
+        .mockResolvedValueOnce({ walletAddress: 'A' })
+        .mockResolvedValueOnce({ walletAddress: 'B' })
+        .mockResolvedValueOnce({
+          walletAddress: 'B',
+          followerCount: 5,
+          followingCount: 2,
+        });
+      em.query
+        .mockResolvedValueOnce([{ id: 'f1' }])
+        .mockResolvedValueOnce([[], 2]);
+
+      await expect(service.toggleFollow('A', 'B')).resolves.toEqual({
+        followerAddress: 'A',
+        followingAddress: 'B',
+        following: true,
+        followerCount: 5,
+        followingCount: 2,
+      });
+    });
+
+    it('unfollows when already following', async () => {
+      followsRepo.findOne.mockResolvedValueOnce({ id: 'f1' });
+      usersRepo.findOne.mockResolvedValueOnce({
+        followerCount: 4,
+        followingCount: 0,
+      });
+      em.query
+        .mockResolvedValueOnce([[{ id: 'f1' }], 1])
+        .mockResolvedValueOnce([[], 2]);
+
+      const result = await service.toggleFollow('A', 'B');
+      expect(result.following).toBe(false);
+      expect(result.followerCount).toBe(4);
+    });
+
+    it('tolerates a concurrent request that already followed', async () => {
+      followsRepo.findOne.mockResolvedValueOnce(null);
+      usersRepo.findOne.mockResolvedValue({
+        walletAddress: 'X',
+        followerCount: 1,
+        followingCount: 0,
+      });
+      em.query.mockResolvedValueOnce([]); // lost the race
+
+      const result = await service.toggleFollow('A', 'B');
+      expect(result.following).toBe(true);
+    });
+  });
+
+  it('reads follower counts from the cached columns', async () => {
+    usersRepo.findOne.mockResolvedValueOnce({
+      id: 'u1',
+      walletAddress: 'GA',
+      followerCount: 12,
+      followingCount: 3,
+      badges: [],
+    });
+    const profile = await service.getUserByAddress('GA');
+    expect(profile.followerCount).toBe(12);
+    expect(profile.followingCount).toBe(3);
+    expect(followsRepo.count).not.toHaveBeenCalled();
   });
 
   it('returns paginated followers', async () => {

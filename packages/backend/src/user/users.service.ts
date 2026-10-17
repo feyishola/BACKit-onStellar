@@ -19,6 +19,7 @@ import { Follow } from './entities/follow.entity';
 import { NotificationPreferencesService } from '../notifications/notification-preferences.service';
 import { IpfsService } from '../storage/ipfs.service';
 import { CreateProfileDto, UpdateProfileDto } from './dto/profile.dto';
+import { affectedRowCount, SocialGraphService } from './social-graph.service';
 
 @Injectable()
 export class UsersService {
@@ -34,6 +35,7 @@ export class UsersService {
     private readonly preferenceService: NotificationPreferencesService,
     private readonly ipfsService: IpfsService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly socialGraphService: SocialGraphService,
   ) {}
 
   private generateReferralCode(): string {
@@ -69,18 +71,30 @@ export class UsersService {
     await this.findOrCreateByAddress(followerAddress);
     await this.findOrCreateByAddress(followingAddress);
 
-    const existing = await this.followsRepo.findOne({
-      where: { followerAddress, followingAddress },
+    // Insert + both counter bumps commit atomically; ON CONFLICT makes
+    // concurrent duplicate follows lose cleanly instead of double-counting.
+    const result = await this.followsRepo.manager.transaction(async (em) => {
+      const inserted = await em.query<Follow[]>(
+        `INSERT INTO follows ("followerAddress", "followingAddress")
+         VALUES ($1, $2)
+         ON CONFLICT ("followerAddress", "followingAddress") DO NOTHING
+         RETURNING *`,
+        [followerAddress, followingAddress],
+      );
+      if (!inserted.length) {
+        throw new ConflictException('Already following this user');
+      }
+      await em.query(
+        `UPDATE users SET
+           "followingCount" = "followingCount" + CASE WHEN "walletAddress" = $1 THEN 1 ELSE 0 END,
+           "followerCount" = "followerCount" + CASE WHEN "walletAddress" = $2 THEN 1 ELSE 0 END
+         WHERE "walletAddress" IN ($1, $2)`,
+        [followerAddress, followingAddress],
+      );
+      return inserted[0];
     });
-    if (existing) {
-      throw new ConflictException('Already following this user');
-    }
 
-    const result = await this.followsRepo.save(
-      this.followsRepo.create({ followerAddress, followingAddress }),
-    );
-    await this.invalidateUserProfile(followerAddress);
-    await this.invalidateUserProfile(followingAddress);
+    await this.invalidateSocialCaches(followerAddress, followingAddress);
     this.eventEmitter.emit('user.followed', {
       followerAddress,
       followingAddress,
@@ -89,17 +103,76 @@ export class UsersService {
   }
 
   async unfollow(followerAddress: string, followingAddress: string) {
-    const follow = await this.followsRepo.findOne({
+    const result = await this.followsRepo.manager.transaction(async (em) => {
+      const deleted = affectedRowCount(
+        await em.query<unknown>(
+          `DELETE FROM follows
+           WHERE "followerAddress" = $1 AND "followingAddress" = $2
+           RETURNING id`,
+          [followerAddress, followingAddress],
+        ),
+      );
+      if (!deleted) {
+        throw new BadRequestException('Not following this user');
+      }
+      await em.query(
+        `UPDATE users SET
+           "followingCount" = GREATEST("followingCount" - CASE WHEN "walletAddress" = $1 THEN 1 ELSE 0 END, 0),
+           "followerCount" = GREATEST("followerCount" - CASE WHEN "walletAddress" = $2 THEN 1 ELSE 0 END, 0)
+         WHERE "walletAddress" IN ($1, $2)`,
+        [followerAddress, followingAddress],
+      );
+      return { followerAddress, followingAddress };
+    });
+
+    await this.invalidateSocialCaches(followerAddress, followingAddress);
+    return result;
+  }
+
+  /** Follows if not following, unfollows otherwise. Race-tolerant. */
+  async toggleFollow(followerAddress: string, followingAddress: string) {
+    const existing = await this.followsRepo.findOne({
       where: { followerAddress, followingAddress },
     });
-    if (!follow) {
-      throw new BadRequestException('Not following this user');
+
+    let following: boolean;
+    try {
+      if (existing) {
+        await this.unfollow(followerAddress, followingAddress);
+        following = false;
+      } else {
+        await this.follow(followerAddress, followingAddress);
+        following = true;
+      }
+    } catch (err) {
+      // A concurrent request already reached the state we were heading for.
+      if (existing && err instanceof BadRequestException) following = false;
+      else if (!existing && err instanceof ConflictException) following = true;
+      else throw err;
     }
 
-    const result = await this.followsRepo.remove(follow);
+    const counts = await this.getFollowCounts(followingAddress);
+    return { followerAddress, followingAddress, following, ...counts };
+  }
+
+  async getFollowCounts(walletAddress: string) {
+    const user = await this.usersRepo.findOne({
+      where: { walletAddress },
+      select: ['walletAddress', 'followerCount', 'followingCount'],
+    });
+    return {
+      followerCount: user?.followerCount ?? 0,
+      followingCount: user?.followingCount ?? 0,
+    };
+  }
+
+  private async invalidateSocialCaches(
+    followerAddress: string,
+    followingAddress: string,
+  ) {
     await this.invalidateUserProfile(followerAddress);
     await this.invalidateUserProfile(followingAddress);
-    return result;
+    await this.socialGraphService.invalidateSecondDegree(followerAddress);
   }
 
   private async invalidateUserProfile(address: string) {
@@ -195,10 +268,9 @@ export class UsersService {
       await this.analyticsService.calculatePredictorReliability(user.id);
     const reputationScore =
       await this.analyticsService.calculateReputationScore(walletAddress);
-    const [followerCount, followingCount] = await Promise.all([
-      this.followsRepo.count({ where: { followingAddress: walletAddress } }),
-      this.followsRepo.count({ where: { followerAddress: walletAddress } }),
-    ]);
+    // Denormalised counters, kept exact by follow/unfollow transactions.
+    const followerCount = user.followerCount ?? 0;
+    const followingCount = user.followingCount ?? 0;
 
     return {
       ...user,

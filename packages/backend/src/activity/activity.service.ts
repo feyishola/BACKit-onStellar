@@ -41,6 +41,39 @@ export class ActivityService {
     return { data, total, page, limit };
   }
 
+  /**
+   * Friend activity feed (BE-034): recent activity from everyone
+   * `followerAddress` follows, newest first.
+   */
+  async getFriendFeed(
+    followerAddress: string,
+    page = 1,
+    limit = 20,
+    type?: ActivityType,
+  ) {
+    const take = Math.min(Math.max(limit, 1), 100);
+    const skip = (Math.max(page, 1) - 1) * take;
+    const query = this.activityRepo
+      .createQueryBuilder('activity')
+      .innerJoin(
+        'follows',
+        'f',
+        'f."followingAddress" = activity."userAddress" AND f."followerAddress" = :followerAddress',
+        { followerAddress },
+      )
+      .orderBy('activity.createdAt', 'DESC')
+      .addOrderBy('activity.id', 'DESC')
+      .skip(skip)
+      .take(take);
+
+    if (type) {
+      query.andWhere('activity.type = :type', { type });
+    }
+
+    const [data, total] = await query.getManyAndCount();
+    return { data, total, page: Math.max(page, 1), limit: take };
+  }
+
   @OnEvent('call.created')
   async handleCallCreated(payload: {
     id: string;

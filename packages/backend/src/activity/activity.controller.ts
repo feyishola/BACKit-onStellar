@@ -22,4 +22,14 @@ export class ActivityController {
   ) {
     return this.activityService.getUserActivity(address, page, limit, type);
   }
+
+  @Get(':address/feed')
+  async getFriendFeed(
+    @Param('address') address: string,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query('type') type?: ActivityType,
+  ) {
+    return this.activityService.getFriendFeed(address, page, limit, type);
+  }
 }
